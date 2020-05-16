@@ -19,8 +19,8 @@ func NewServer(host string, exts ...string) *Server {
 }
 
 // Listen listens for new connections.
-func (s *Server) Listen() error {
-	l, err := net.Listen("tcp", ":smtp")
+func (s *Server) Listen(address string) error {
+	l, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}

@@ -7,9 +7,9 @@ import (
 )
 
 func testConnect(t *testing.T) *textproto.Conn {
-	go NewServer("localhost").Listen()
+	go NewServer("localhost").Listen("localhost:3000")
 
-	conn, err := net.Dial("tcp", "localhost:smtp")
+	conn, err := net.Dial("tcp", "localhost:3000")
 	if err != nil {
 		t.Errorf("Failed to connect!")
 	}
