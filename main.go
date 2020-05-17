@@ -5,5 +5,5 @@ import (
 )
 
 func main() {
-	server.NewServer("yondero.co", "STARTTLS").Listen(":smtp")
+	//server.NewServer("yondero.co", "STARTTLS").Listen(":smtp")
 }
