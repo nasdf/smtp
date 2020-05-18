@@ -6,13 +6,22 @@ import (
 	"net/textproto"
 	"strings"
 	"testing"
+
+	"github.com/yondero/smtp/storage"
 )
 
 func connect(t *testing.T) (*textproto.Conn, *Session) {
 	client, server := net.Pipe()
-	text := textproto.NewConn(client)
 
-	session := NewSession(server)
+	t.Cleanup(func() {
+		client.Close()
+		server.Close()
+	})
+
+	text := textproto.NewConn(client)
+	storage := storage.NewMemoryStorage()
+	session := NewSession(server, storage)
+
 	go session.Serve()
 
 	_, _, err := text.ReadResponse(220)
@@ -23,32 +32,40 @@ func connect(t *testing.T) (*textproto.Conn, *Session) {
 	return text, session
 }
 
-func command(t *testing.T, cmd string, code int, text *textproto.Conn) string {
+func command(t *testing.T, text *textproto.Conn, cmd string, code int) string {
 	err := text.PrintfLine(cmd)
 	if err != nil {
-		t.Errorf("Failed to send!")
+		t.Errorf("Error sending cmd=%s!", cmd)
 	}
 
 	_, message, err := text.ReadResponse(code)
 	if err != nil {
-		t.Errorf("Failed to receive!")
+		t.Errorf("Error receiving cmd=%s!", cmd)
 	}
 
 	return message
 }
 
+func TestExitsAfterTooManyErrors(t *testing.T) {
+	text, _ := connect(t)
+
+	command(t, text, "ERROR", 500)
+
+	command(t, text, "ERROR", 500)
+
+	command(t, text, "ERROR", 221)
+}
+
 func TestHELO(t *testing.T) {
 	text, session := connect(t)
-	defer text.Close()
 
 	rcpt1 := &mail.Address{Address: "user@example.com"}
 	rcpt2 := &mail.Address{Address: "user@example.com"}
 
 	session.Sender = &mail.Address{Address: "user@example.com"}
 	session.Rcpts = []*mail.Address{rcpt1, rcpt2}
-	session.Data = []string{"Hello."}
 
-	message := command(t, "HELO", 250, text)
+	message := command(t, text, "HELO", 250)
 	if !strings.Contains(message, "yondero.co") {
 		t.Errorf("Missing host!")
 	}
@@ -60,24 +77,18 @@ func TestHELO(t *testing.T) {
 	if session.Rcpts != nil {
 		t.Errorf("Rcpts should be nil!")
 	}
-
-	if session.Data != nil {
-		t.Errorf("Data should be nil!")
-	}
 }
 
 func TestEHLO(t *testing.T) {
 	text, session := connect(t)
-	defer text.Close()
 
 	rcpt1 := &mail.Address{Address: "user@example.com"}
 	rcpt2 := &mail.Address{Address: "user@example.com"}
 
 	session.Sender = &mail.Address{Address: "user@example.com"}
 	session.Rcpts = []*mail.Address{rcpt1, rcpt2}
-	session.Data = []string{"Hello."}
-	
-	message := command(t, "EHLO", 250, text)
+
+	message := command(t, text, "EHLO", 250)
 	if !strings.Contains(message, "yondero.co") {
 		t.Errorf("Missing host!")
 	}
@@ -93,32 +104,27 @@ func TestEHLO(t *testing.T) {
 	if session.Rcpts != nil {
 		t.Errorf("Rcpts should be nil!")
 	}
-
-	if session.Data != nil {
-		t.Errorf("Data should be nil!")
-	}
 }
 
 func TestMAIL(t *testing.T) {
 	text, session := connect(t)
-	defer text.Close()
 
-	command(t, "MAIL", 500, text)
+	command(t, text, "MAIL", 500)
 	if session.Sender != nil {
 		t.Errorf("Sender should not be set!")
 	}
 
-	command(t, "MAIL FROM:<invalid>", 500, text)
+	command(t, text, "MAIL FROM:<invalid>", 500)
 	if session.Sender != nil {
 		t.Errorf("Sender should not be set!")
 	}
 
-	command(t, "MAIL FROM:<>", 250, text)
+	command(t, text, "MAIL FROM:<>", 250)
 	if session.Sender != nil {
 		t.Errorf("Sender should not be set!")
 	}
 
-	command(t, "MAIL FROM:<user@example.com>", 250, text)
+	command(t, text, "MAIL FROM:<user@example.com>", 250)
 	if session.Sender == nil {
 		t.Errorf("Sender not set!")
 	}
@@ -126,19 +132,18 @@ func TestMAIL(t *testing.T) {
 
 func TestRCPT(t *testing.T) {
 	text, session := connect(t)
-	defer text.Close()
 
-	command(t, "RCPT", 500, text)
+	command(t, text, "RCPT", 500)
 	if session.Rcpts != nil {
 		t.Errorf("Rcpts should not be set!")
 	}
 
-	command(t, "RCPT TO:<invalid>", 500, text)
+	command(t, text, "RCPT TO:<invalid>", 500)
 	if session.Rcpts != nil {
 		t.Errorf("Rcpts should not be set!")
 	}
 
-	command(t, "RCPT TO:<user@example.com>", 250, text)
+	command(t, text, "RCPT TO:<user@example.com>", 250)
 	if session.Rcpts == nil {
 		t.Errorf("Rcpts not set!")
 	}
@@ -146,37 +151,44 @@ func TestRCPT(t *testing.T) {
 
 func TestDATA(t *testing.T) {
 	text, session := connect(t)
-	defer text.Close()
 
-	command(t, "DATA", 500, text)
-	if session.Data != nil {
-		t.Errorf("Data should not be set!")
-	}
+	command(t, text, "DATA", 500)
 
 	rcpt := &mail.Address{Address: "user@example.com"}
 	session.Rcpts = []*mail.Address{rcpt}
 
-	command(t, "DATA", 354, text)
-	if session.Data != nil {
-		t.Errorf("Data should not be set!")
+	command(t, text, "DATA", 354)
+
+	command(t, text, "Hello.\r\n.", 250)
+}
+
+func TestRSET(t *testing.T) {
+	text, session := connect(t)
+
+	rcpt1 := &mail.Address{Address: "user@example.com"}
+	rcpt2 := &mail.Address{Address: "user@example.com"}
+
+	session.Sender = &mail.Address{Address: "user@example.com"}
+	session.Rcpts = []*mail.Address{rcpt1, rcpt2}
+
+	command(t, text, "RSET", 250)
+	if session.Sender != nil {
+		t.Errorf("Sender should be nil!")
 	}
 
-	command(t, "Hello.\r\n.", 250, text)
-	if session.Data == nil {
-		t.Errorf("Data should be set!")
+	if session.Rcpts != nil {
+		t.Errorf("Rcpts should be nil!")
 	}
 }
 
 func TestNOOP(t *testing.T) {
 	text, _ := connect(t)
-	defer text.Close()
 
-	command(t, "NOOP", 250, text)
+	command(t, text, "NOOP", 250)
 }
 
 func TestQUIT(t *testing.T) {
 	text, _ := connect(t)
-	defer text.Close()
 
-	command(t, "QUIT", 221, text)
+	command(t, text, "QUIT", 221)
 }
